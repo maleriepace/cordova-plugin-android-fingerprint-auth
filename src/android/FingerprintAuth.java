@@ -306,14 +306,17 @@ public class FingerprintAuth extends CordovaPlugin {
                     }
                     res.updateConfiguration(conf, dm);
 
-                    if (isFingerprintAuthAvailable()) {
-                        SecretKey key = getSecretKey();
-                        if (key == null) {
-                            if (createKey()) {
-                                key = getSecretKey();
-                            }
+                    SecretKey key = getSecretKey();
+                    if (key == null) {
+                        if (createKey()) {
+                            key = getSecretKey();
                         }
-                        if (key != null) {
+                    }
+
+                    if (key == null) {
+                        mCallbackContext.sendPluginResult(mPluginResult);
+                    } else {
+                        if (isFingerprintAuthAvailable()) {
                             cordova.getActivity().runOnUiThread(new Runnable() {
                                 public void run() {
                                     // Set up the crypto object for later. The object will be authenticated by use
@@ -347,28 +350,26 @@ public class FingerprintAuth extends CordovaPlugin {
                             });
                             mPluginResult.setKeepCallback(true);
                         } else {
-                            mCallbackContext.sendPluginResult(mPluginResult);
-                        }
-                    } else {
-                        /***
-                        Use backup
-                        */
-                        Log.v(TAG, "In backup");
-                        if (useBackupLockScreen() == true) {
-                          Log.v(TAG, "useBackupLockScreen: true");
-                        } else {
-                          Log.v(TAG, "useBackupLockScreen: false");
-                        }
+                            /***
+                            Use backup
+                            */
+                            Log.v(TAG, "In backup");
+                            if (useBackupLockScreen() == true) {
+                              Log.v(TAG, "useBackupLockScreen: true");
+                            } else {
+                              Log.v(TAG, "useBackupLockScreen: false");
+                            }
 
-                        if (useBackupLockScreen()) {
-                          showAuthenticationScreen();
-                        } else {
-                          Log.e(TAG, "Fingerprint authentication not available");
-                          mPluginResult = new PluginResult(PluginResult.Status.ERROR);
-                          mCallbackContext.error(PluginError.FINGERPRINT_NOT_AVAILABLE.name());
-                          mCallbackContext.sendPluginResult(mPluginResult);
-                        }
+                            if (useBackupLockScreen()) {
+                              showAuthenticationScreen();
+                            } else {
+                              Log.e(TAG, "Fingerprint authentication not available");
+                              mPluginResult = new PluginResult(PluginResult.Status.ERROR);
+                              mCallbackContext.error(PluginError.FINGERPRINT_NOT_AVAILABLE.name());
+                              mCallbackContext.sendPluginResult(mPluginResult);
+                            }
 
+                        }
                     }
                     return true;
                 case DELETE:
@@ -574,17 +575,34 @@ public class FingerprintAuth extends CordovaPlugin {
         boolean createdResultJson = false;
 
         try {
+            byte[] bytes;
+            FingerprintManager.CryptoObject cryptoObject;
+
             if (withFingerprint) {
-                // If the user has authenticated with fingerprint, verify that using cryptography and
-                // then return the encrypted (in Base 64) or decrypted mClientSecret
-                byte[] bytes;
+                resultJson.put("withFingerprint", true);
+                cryptoObject = result.getCryptoObject();
+            } else {
+                resultJson.put("withBackup", true);
+
+                // If failed to init cipher because of InvalidKeyException, create new key
+                if (!initCipher()) {
+                    createKey();
+                }
+
+                if (initCipher()) {
+                    cryptoObject = new FingerprintManager.CryptoObject(mCipher);
+                }
+            }
+
+            if (cryptoObject == null) {
+                errorMessage = PluginError.INIT_CIPHER_FAILED.name();
+            } else {
                 if (mCipherModeCrypt) {
-                    bytes = result.getCryptoObject().getCipher()
-                            .doFinal(mClientSecret.getBytes("UTF-8"));
+                    bytes = cryptoObject.getCipher().doFinal(mClientSecret.getBytes("UTF-8"));
                     String encodedBytes = Base64.encodeToString(bytes, Base64.NO_WRAP);
                     resultJson.put("token", encodedBytes);
                 } else {
-                    bytes = result.getCryptoObject().getCipher()
+                    bytes = cryptoObject.getCipher()
                             .doFinal(Base64.decode(mClientSecret, Base64.NO_WRAP));
                     String credentialString = new String(bytes, "UTF-8");
                     String[] credentialArray = credentialString.split(":");
@@ -596,17 +614,8 @@ public class FingerprintAuth extends CordovaPlugin {
                         }
                     }
                 }
-                resultJson.put("withFingerprint", true);
-            } else {
-                // Authentication happened with backup password.
-                resultJson.put("withBackup", true);
-
-                // If failed to init cipher because of InvalidKeyException, create new key
-                if (!initCipher()) {
-                    createKey();
-                }
+                createdResultJson = true;
             }
-            createdResultJson = true;
         } catch (BadPaddingException e) {
             Log.e(TAG, "Failed to encrypt the data with the generated key:"
                     + " BadPaddingException:  " + e.toString());
